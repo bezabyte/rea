@@ -511,11 +511,10 @@ const readWorkflow = async () =>
   z
     .object({
       on: z.object({
-        pull_request_target: z.object({
+        pull_request: z.object({
           branches: z.array(z.string()),
           types: z.array(z.string()),
         }),
-        workflow_dispatch: z.unknown(),
       }),
       permissions: z.record(z.string(), z.string()),
       jobs: z.object({
@@ -546,13 +545,49 @@ const readWorkflow = async () =>
       ),
     );
 
-it("executes the production workflow step with trusted code and status-only write authority", async () => {
+const readStatusWorkflow = async () =>
+  z
+    .object({
+      on: z.object({
+        workflow_run: z.object({
+          workflows: z.array(z.string()),
+          types: z.array(z.string()),
+        }),
+        workflow_dispatch: z.unknown(),
+      }),
+      permissions: z.record(z.string(), z.string()),
+      jobs: z.object({
+        publish: z.object({
+          permissions: z.record(z.string(), z.string()),
+          steps: z.array(
+            z.object({
+              uses: z.string(),
+              with: z.object({
+                ref: z.string().optional(),
+                "persist-credentials": z.boolean().optional(),
+                script: z.string().optional(),
+              }),
+            }),
+          ),
+        }),
+      }),
+    })
+    .parse(
+      parse(
+        await readFile(
+          new URL(
+            "../../../.github/workflows/pr-readiness-status.yml",
+            import.meta.url,
+          ),
+          "utf8",
+        ),
+      ),
+    );
+
+it("executes the read-only PR workflow from trusted code", async () => {
   const workflow = await readWorkflow();
-  expect(workflow.on.pull_request_target.branches).toEqual([
-    "main",
-    "release/*",
-  ]);
-  expect(workflow.on.pull_request_target.types).toEqual(
+  expect(workflow.on.pull_request.branches).toEqual(["main", "release/*"]);
+  expect(workflow.on.pull_request.types).toEqual(
     expect.arrayContaining([
       "opened",
       "edited",
@@ -566,7 +601,6 @@ it("executes the production workflow step with trusted code and status-only writ
   expect(workflow.jobs.readiness.permissions).toEqual({
     contents: "read",
     "pull-requests": "read",
-    statuses: "write",
   });
   const [checkout, check] = workflow.jobs.readiness.steps;
   expect(checkout?.with).toEqual({
@@ -597,6 +631,76 @@ it("executes the production workflow step with trusted code and status-only writ
       setFailed: message => { throw new Error(message); },
     };
     ${z.string().parse(check?.with.script)}
+    console.log(JSON.stringify(statuses));
+  `;
+  const { stdout } = await promisify(execFile)(
+    process.execPath,
+    ["--input-type=module", "-e", code],
+    {
+      cwd: root,
+      env: { ...process.env, GITHUB_WORKSPACE: root },
+      encoding: "utf8",
+      timeout: 10_000,
+      maxBuffer: 1024 * 1024,
+    },
+  );
+  expect(
+    z.array(z.object({ state: z.string() })).parse(JSON.parse(stdout)),
+  ).toEqual([]);
+});
+
+it("publishes status only from the trusted workflow-run follow-up", async () => {
+  const workflow = await readStatusWorkflow();
+  expect(workflow.on.workflow_run).toEqual({
+    workflows: ["PR readiness"],
+    types: ["completed"],
+  });
+  expect(workflow.permissions).toEqual({});
+  expect(workflow.jobs.publish.permissions).toEqual({
+    contents: "read",
+    "pull-requests": "read",
+    statuses: "write",
+  });
+  const [checkout, publish] = workflow.jobs.publish.steps;
+  expect(checkout?.with).toEqual({
+    ref: "${{ github.event.repository.default_branch }}",
+    "persist-credentials": false,
+  });
+  expect(publish?.uses).toMatch(/^actions\/github-script@[a-f\d]{40}$/u);
+  const input = fixture();
+  const root = fileURLToPath(new URL("../../../", import.meta.url));
+  const code = `
+    import { createRequire } from "node:module";
+    const require = createRequire(${JSON.stringify(new URL("../../../package.json", import.meta.url).href)});
+    const pull = ${JSON.stringify(input.pull)};
+    const statuses = [];
+    const github = {
+      rest: {
+        pulls: { get: async () => ({ data: pull }) },
+        repos: {
+          createCommitStatus: async status => statuses.push(status),
+          listPullRequestsAssociatedWithCommit: () => {},
+        },
+      },
+      paginate: async () => [pull],
+    };
+    const context = {
+      ...${JSON.stringify(input.context)},
+      eventName: "workflow_run",
+      payload: {
+        workflow_run: {
+          event: "pull_request",
+          conclusion: "success",
+          pull_requests: [{ number: 42 }],
+          html_url: "https://github.com/morluto/rea/actions/runs/456",
+        },
+      },
+    };
+    const core = {
+      info: () => {},
+      setFailed: message => { throw new Error(message); },
+    };
+    ${z.string().parse(publish?.with.script)}
     console.log(JSON.stringify(statuses));
   `;
   const { stdout } = await promisify(execFile)(

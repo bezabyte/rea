@@ -158,9 +158,16 @@ export function evaluateReadiness(pull, template) {
   );
 }
 
-/** Publish readiness on the PR head without running contributor code. */
-export async function runReadinessCheck({ github, context, core }) {
+/** Check readiness and optionally publish the result on the PR head. */
+export async function runReadinessCheck({
+  github,
+  context,
+  core,
+  pullRequestNumber,
+  publishStatus = true,
+}) {
   const number =
+    pullRequestNumber ??
     context.payload.pull_request?.number ??
     Number(context.payload.inputs?.pull_request_number);
   if (!Number.isSafeInteger(number) || number <= 0)
@@ -171,18 +178,22 @@ export async function runReadinessCheck({ github, context, core }) {
   const pull = await getPull();
   if (pull.state !== "open" || !/^(?:main|release\/.+)$/u.test(pull.base.ref))
     return;
-  const publish = (sha, verdict) =>
-    github.rest.repos.createCommitStatus({
-      ...repository,
-      sha,
-      context: "PR readiness",
-      ...verdict,
-      target_url: `${context.serverUrl}/${repository.owner}/${repository.repo}/actions/runs/${context.runId}`,
-    });
-  await publish(
-    pull.head.sha,
-    result("pending", "Checking the initial author readiness declaration."),
-  );
+  const publish =
+    publishStatus === true
+      ? (sha, verdict) =>
+          github.rest.repos.createCommitStatus({
+            ...repository,
+            sha,
+            context: "PR readiness",
+            ...verdict,
+            target_url: `${context.serverUrl}/${repository.owner}/${repository.repo}/actions/runs/${context.runId}`,
+          })
+      : undefined;
+  if (publish !== undefined)
+    await publish(
+      pull.head.sha,
+      result("pending", "Checking the initial author readiness declaration."),
+    );
   const template = await readFile(
     new URL("../../.github/pull_request_template.md", import.meta.url),
     "utf8",
@@ -230,7 +241,7 @@ export async function runReadinessCheck({ github, context, core }) {
       "pending",
       "PR changed during the check; wait for the latest run or rerun PR readiness.",
     );
-  await publish(latest.head.sha, verdict);
+  if (publish !== undefined) await publish(latest.head.sha, verdict);
   core.info(verdict.description);
   if (verdict.state === "failure") core.setFailed(verdict.description);
   return verdict;

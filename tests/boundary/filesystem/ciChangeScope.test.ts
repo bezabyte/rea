@@ -1721,6 +1721,10 @@ it.each([
     { workflows: true, code: true, package: false, website: false },
   ],
   [
+    ".github/workflows/pr-readiness-status.yml",
+    { workflows: true, code: true, package: false, website: false },
+  ],
+  [
     ".github/workflows/codeql.yml",
     { workflows: true, code: true, runtime: false, package: false },
   ],

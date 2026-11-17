@@ -1,7 +1,7 @@
 name: PR readiness
 
 on:
-  pull_request_target:
+  pull_request:
     branches: [main, "release/*"]
     types:
       [
@@ -12,17 +12,10 @@ on:
         ready_for_review,
         converted_to_draft,
       ]
-  workflow_dispatch:
-    inputs:
-      pull_request_number:
-        description: Open PR to recheck
-        required: true
-        type: string
-
 permissions: {}
 
 concurrency:
-  group: pr-readiness-${{ github.event.pull_request.number || inputs.pull_request_number }}
+  group: pr-readiness-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
@@ -33,7 +26,6 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
-      statuses: write
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -48,4 +40,9 @@ jobs:
               `${process.env.GITHUB_WORKSPACE}/scripts/ci/pr-readiness.mjs`,
             );
             const { runReadinessCheck } = await import(entry.href);
-            await runReadinessCheck({ github, context, core });
+            await runReadinessCheck({
+              github,
+              context,
+              core,
+              publishStatus: false,
+            });

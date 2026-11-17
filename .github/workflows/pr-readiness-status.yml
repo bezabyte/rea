@@ -1,0 +1,91 @@
+name: PR readiness status
+
+on:
+  workflow_run:
+    workflows: ["PR readiness"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      pull_request_number:
+        description: Open PR to recheck
+        required: true
+        type: string
+
+# The pull_request workflow is intentionally read-only. This trusted follow-up
+# is the only workflow allowed to publish the required commit status.
+permissions: {}
+
+concurrency:
+  group: pr-readiness-status-${{ github.event.workflow_run.pull_requests[0].number || inputs.pull_request_number }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    name: Publish PR readiness status
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Publish readiness
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
+        with:
+          script: |
+            const { pathToFileURL } = require("node:url");
+            const entry = pathToFileURL(
+              `${process.env.GITHUB_WORKSPACE}/scripts/ci/pr-readiness.mjs`,
+            );
+            const { runReadinessCheck } = await import(entry.href);
+            const workflowRun = context.payload.workflow_run;
+            const number =
+              Number(context.payload.inputs?.pull_request_number) ||
+              workflowRun?.pull_requests?.[0]?.number;
+            if (!Number.isSafeInteger(number) || number <= 0)
+              throw new Error(
+                "The readiness workflow run did not identify an open pull request.",
+              );
+            if (
+              context.eventName === "workflow_run" &&
+              workflowRun?.conclusion !== "success"
+            ) {
+              const pull =
+                await github.rest.pulls.get({
+                  ...context.repo,
+                  pull_number: number,
+                });
+              if (
+                pull.data.state === "open" &&
+                /^(?:main|release\/.+)$/u.test(pull.data.base.ref)
+              ) {
+                await github.rest.repos.createCommitStatus({
+                  ...context.repo,
+                  sha: pull.data.head.sha,
+                  context: "PR readiness",
+                  state: "failure",
+                  description:
+                    "The trusted readiness workflow did not complete successfully; inspect its run before retrying.",
+                  target_url:
+                    workflowRun.html_url ??
+                    `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+                });
+              }
+              core.setFailed(
+                "The trusted PR readiness workflow did not complete successfully.",
+              );
+            } else {
+              await runReadinessCheck({
+                github,
+                context,
+                core,
+                pullRequestNumber: number,
+              });
+            }

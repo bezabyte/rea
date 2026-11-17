@@ -16,6 +16,7 @@ const GUARDED_WORKFLOWS = new Set([
   ".github/workflows/codeql.yml",
   ".github/workflows/pr-title.yml",
   ".github/workflows/pr-readiness.yml",
+  ".github/workflows/pr-readiness-status.yml",
   ".github/workflows/ci-full-pr.yml",
   ".github/workflows/release.yml",
   ".github/workflows/release-recovery.yml",
